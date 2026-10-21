@@ -1,0 +1,95 @@
+name: Windows CUDA build (GTX 1660 SUPER / sm_75)
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - ".github/workflows/windows-cuda-sm75.yml"
+      - "c/**"
+      - "docs/windows.md"
+
+permissions:
+  contents: read
+
+jobs:
+  windows-cuda-sm75:
+    runs-on: windows-2022
+    timeout-minutes: 45
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install MSYS2 build tools
+        uses: msys2/setup-msys2@66cd2cce69caa17b53920067426061ca1de3a884 # v2
+        with:
+          msystem: UCRT64
+          update: false
+          path-type: inherit
+          install: >-
+            make
+            mingw-w64-ucrt-x86_64-gcc
+
+      - name: Install CUDA Toolkit 12.8
+        uses: Jimver/cuda-toolkit@v0.2.24
+        with:
+          cuda: "12.8.0"
+          method: network
+          sub-packages: '["nvcc", "cudart", "cudart_dev", "visual_studio_integration"]'
+
+      - name: Build CUDA backend and Windows engine for Turing (sm_75)
+        shell: cmd
+        run: |
+          for /f "usebackq tokens=*" %%i in (`"%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe" -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath`) do set "VSROOT=%%i"
+          if not defined VSROOT (echo Visual Studio C++ build tools not found & exit /b 1)
+          call "%VSROOT%\VC\Auxiliary\Build\vcvars64.bat"
+          if errorlevel 1 exit /b 1
+          set "PATH=C:\msys64\usr\bin;C:\msys64\ucrt64\bin;%PATH%"
+          where nvcc
+          nvcc --version
+          cd c
+          make cuda-dll CUDA_ARCH=sm_75
+          if errorlevel 1 exit /b 1
+          make colibri.exe CUDA_DLL=1 ARCH=x86-64-v3
+          if errorlevel 1 exit /b 1
+          copy "%CUDA_PATH%\bin\cudart64_12.dll" cudart64_12.dll
+          if errorlevel 1 exit /b 1
+          colibri.exe --version
+          if errorlevel 1 exit /b 1
+          if not exist colibri.exe exit /b 1
+          if not exist coli_cuda.dll exit /b 1
+          if not exist cudart64_12.dll exit /b 1
+
+      - name: Package test build
+        shell: pwsh
+        run: |
+          $stage = Join-Path $PWD "colibri-windows-cuda-sm75"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item "c/colibri.exe" $stage
+          Copy-Item "c/coli_cuda.dll" $stage
+          Copy-Item "c/cudart64_12.dll" $stage
+          @'
+          Colibri Windows CUDA test build (sm_75)
+          ========================================
+          Target: NVIDIA Turing, including GTX 1660 SUPER (compute capability 7.5).
+          Built by GitHub Actions; compile and --version smoke test only. No physical
+          GPU is attached to the hosted runner, so actual CUDA inference is unverified.
+
+          To test with your checkout, back up the existing c/colibri.exe, then copy
+          these three files into your checkout's c/ directory. Use your normal
+          Colibri launcher and existing model directory. Do not copy model files
+          into this archive.
+
+          Check startup logs for [CUDA] resident set and fallback diagnostics. A
+          CUDA device banner alone does not prove model tensors are using the GPU.
+          This build cannot make a 400 GB model fit in 6 GB VRAM; it only enables
+          the CUDA backend on sm_75 and may help if CUDA kernels are a bottleneck.
+          '@ | Set-Content -Encoding utf8 (Join-Path $stage "README-test.txt")
+          Compress-Archive -Path "$stage/*" -DestinationPath "colibri-windows-cuda-sm75.zip" -Force
+
+      - name: Upload test build
+        uses: actions/upload-artifact@v4
+        with:
+          name: colibri-windows-cuda-sm75
+          path: colibri-windows-cuda-sm75.zip
+          if-no-files-found: error
+          retention-days: 14
